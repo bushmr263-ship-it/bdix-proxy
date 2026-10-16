@@ -1,7 +1,9 @@
 const express = require('express');
 const fetch = require('node-fetch');
 const app = express();
-const PORT = process.env.PORT || 3000;
+
+// Railway automatic port or fallback to 8080
+const PORT = process.env.PORT || 8080;
 
 app.use((req, res, next) => {
     res.header("Access-Control-Allow-Origin", "*");
@@ -51,6 +53,6 @@ app.get('/', async (req, res) => {
     }
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
     console.log(`Proxy running on port ${PORT}`);
 });
