@@ -1,9 +1,7 @@
 // ===================================================
-// Secret Code
+// Secret Code & Playlist Configuration
 // ===================================================
 const EXPIRE_CODE = "48436844"; 
-
-// Update kora M3U Playlist URL
 const PLAYLIST_URL = 'https://raw.githubusercontent.com/bushmr263-ship-it/online-tv/refs/heads/main/playlist.m3u';
 // ===================================================
 
@@ -11,11 +9,11 @@ export async function onRequest(context) {
   const { request } = context;
   const url = new URL(request.url);
 
-  // CORS Headers
   const corsHeaders = {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Access-Control-Allow-Headers': '*',
+    'Access-Control-Expose-Headers': '*',
   };
 
   if (request.method === 'OPTIONS') {
@@ -99,13 +97,17 @@ export async function onRequest(context) {
     const parsedTarget = new URL(targetUrl);
     const targetOrigin = parsedTarget.origin;
 
+    // টার্গেট সার্ভারে পাঠানোর জন্য হেডার প্রস্তুত
+    const requestHeaders = new Headers();
+    requestHeaders.set('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
+    requestHeaders.set('Origin', targetOrigin);
+    requestHeaders.set('Referer', targetOrigin + '/');
+    requestHeaders.set('Accept', '*/*');
+
     const response = await fetch(targetUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        'Origin': targetOrigin,
-        'Referer': targetOrigin + '/',
-        'Accept': '*/*'
-      }
+      method: request.method,
+      headers: requestHeaders,
+      redirect: 'follow'
     });
 
     if (!response.ok) {
@@ -118,57 +120,78 @@ export async function onRequest(context) {
     const contentType = response.headers.get('content-type') || '';
     const finalUrl = response.url; 
 
-    // M3U8 / Playlist সঠিকভাবে রিরাইট করার জন্য কন্ডিশন
-    const isM3U8 = targetUrl.toLowerCase().includes('.m3u8') || 
-                   contentType.toLowerCase().includes('mpegurl') || 
-                   contentType.toLowerCase().includes('m3u');
+    // প্লেলিস্ট কিনা তা পরীক্ষা (Extension বা EXTM3U ট্যাগ যাচাই)
+    const isM3U8 = targetUrl.includes('.m3u8') || 
+                   targetUrl.includes('.m3u') || 
+                   contentType.includes('mpegurl') || 
+                   contentType.includes('m3u') || 
+                   contentType.includes('text/plain');
 
     if (isM3U8) {
       const text = await response.text();
-      const lines = text.split('\n');
-      
-      const rewrittenLines = lines.map(line => {
-        const trimmed = line.trim();
-        if (!trimmed) return line;
 
-        // AES Encryption Key (#EXT-X-KEY) ও URI রিরাইট
-        if (trimmed.startsWith('#')) {
-          if (trimmed.includes('URI=')) {
-            return trimmed.replace(/URI=["']([^"']+)["']/g, (match, uri) => {
-              try {
-                const abs = new URL(uri, finalUrl).href;
-                return `URI="${protocol}://${host}/?url=${encodeURIComponent(abs)}"`;
-              } catch (e) {
-                return match;
-              }
-            });
+      // যদি ফাইলের ভেতরে #EXTM3U লেখা থাকে বা M3U8 ফরম্যাট হয়
+      if (text.includes('#EXTM3U') || text.includes('#EXT-X-STREAM-INF') || text.includes('#EXTINF')) {
+        const lines = text.split('\n');
+        const rewrittenLines = lines.map(line => {
+          const trimmed = line.trim();
+          if (!trimmed) return line;
+
+          // #EXT-X-KEY (AES Encryption) এবং #EXT-X-MEDIA রিরাইট
+          if (trimmed.startsWith('#')) {
+            if (trimmed.includes('URI=')) {
+              return trimmed.replace(/URI=["']([^"']+)["']/g, (match, uri) => {
+                try {
+                  const abs = new URL(uri, finalUrl).href;
+                  return `URI="${protocol}://${host}/?url=${encodeURIComponent(abs)}"`;
+                } catch (e) {
+                  return match;
+                }
+              });
+            }
+            return line;
           }
-          return line;
-        }
 
-        // TS সেগমেন্ট এবং সাব-প্লেলিস্ট রিরাইট
-        try {
-          const abs = new URL(trimmed, finalUrl).href;
-          return `${protocol}://${host}/?url=${encodeURIComponent(abs)}`;
-        } catch (e) {
-          return line;
-        }
-      });
+          // .ts সেগমেন্ট এবং চ্যাঙ্ক রিরাইট
+          try {
+            const abs = new URL(trimmed, finalUrl).href;
+            return `${protocol}://${host}/?url=${encodeURIComponent(abs)}`;
+          } catch (e) {
+            return line;
+          }
+        });
 
-      return new Response(rewrittenLines.join('\n'), {
+        return new Response(rewrittenLines.join('\n'), {
+          status: 200,
+          headers: {
+            ...corsHeaders,
+            'Content-Type': 'application/vnd.apple.mpegurl; charset=utf-8'
+          }
+        });
+      }
+
+      return new Response(text, {
         status: 200,
         headers: {
           ...corsHeaders,
-          'Content-Type': 'application/vnd.apple.mpegurl; charset=utf-8'
+          'Content-Type': contentType || 'text/plain'
         }
       });
     }
 
-    // TS বা অন্যান্য বিটস্ট্রিম ডাটা প্লেয়ারে পাঠানো
-    const responseHeaders = new Headers(response.headers);
+    // Binary Video TS Segments ট্রান্সফার
+    const responseHeaders = new Headers();
     Object.entries(corsHeaders).forEach(([key, value]) => {
       responseHeaders.set(key, value);
     });
+
+    const targetType = response.headers.get('content-type');
+    if (targetType) {
+      responseHeaders.set('Content-Type', targetType);
+    } else {
+      responseHeaders.set('Content-Type', 'video/mp2t');
+    }
+    
     responseHeaders.set('Cache-Control', 'public, max-age=3600');
 
     return new Response(response.body, {
