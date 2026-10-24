@@ -26,7 +26,7 @@ export async function onRequest(context) {
   const targetUrl = url.searchParams.get('url');
 
   // ---------------------------------------------------------
-  // ১. M3U প্লেলিস্ট রিকোয়েস্ট (/playlist-expire=48436844.m3u)
+  // ১. M3U Playlist Request
   // ---------------------------------------------------------
   if (!targetUrl && (requestUrl.includes('.m3u') || requestUrl.includes('playlist-expire'))) {
     if (EXPIRE_CODE && !requestUrl.includes(EXPIRE_CODE)) {
@@ -39,7 +39,7 @@ export async function onRequest(context) {
     try {
       const response = await fetch(PLAYLIST_URL, {
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
         }
       });
 
@@ -84,7 +84,7 @@ export async function onRequest(context) {
   }
 
   // ---------------------------------------------------------
-  // ২. ভিডিও ও চ্যাঙ্ক প্রক্সি ফেচিং (Stream / TS / M3U8)
+  // ২. Stream & Segment Fetching (Advanced Browser Spoofing)
   // ---------------------------------------------------------
   if (!targetUrl) {
     return new Response(JSON.stringify({ error: 'No URL provided' }), {
@@ -97,21 +97,29 @@ export async function onRequest(context) {
     const parsedTarget = new URL(targetUrl);
     const targetOrigin = parsedTarget.origin;
 
-    // টার্গেট সার্ভারে পাঠানোর জন্য হেডার প্রস্তুত
-    const requestHeaders = new Headers();
-    requestHeaders.set('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
-    requestHeaders.set('Origin', targetOrigin);
-    requestHeaders.set('Referer', targetOrigin + '/');
-    requestHeaders.set('Accept', '*/*');
+    // ব্রাউজারের মতো করে সম্পূর্ণ ফেক হেডার্স তৈরি করা
+    const forwardHeaders = new Headers();
+    forwardHeaders.set('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
+    forwardHeaders.set('Accept', '*/*');
+    forwardHeaders.set('Accept-Language', 'en-US,en;q=0.9');
+    forwardHeaders.set('Origin', targetOrigin);
+    forwardHeaders.set('Referer', targetOrigin + '/');
+    forwardHeaders.set('Sec-Ch-Ua', '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"');
+    forwardHeaders.set('Sec-Ch-Ua-Mobile', '?0');
+    forwardHeaders.set('Sec-Ch-Ua-Platform', '"Windows"');
+    forwardHeaders.set('Sec-Fetch-Dest', 'empty');
+    forwardHeaders.set('Sec-Fetch-Mode', 'cors');
+    forwardHeaders.set('Sec-Fetch-Site', 'cross-site');
+    forwardHeaders.set('Connection', 'keep-alive');
 
     const response = await fetch(targetUrl, {
       method: request.method,
-      headers: requestHeaders,
+      headers: forwardHeaders,
       redirect: 'follow'
     });
 
     if (!response.ok) {
-      return new Response(JSON.stringify({ error: `Stream failed (${response.status})` }), {
+      return new Response(JSON.stringify({ error: `Stream blocked or failed (${response.status})` }), {
         status: response.status,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       });
@@ -120,7 +128,6 @@ export async function onRequest(context) {
     const contentType = response.headers.get('content-type') || '';
     const finalUrl = response.url; 
 
-    // প্লেলিস্ট কিনা তা পরীক্ষা (Extension বা EXTM3U ট্যাগ যাচাই)
     const isM3U8 = targetUrl.includes('.m3u8') || 
                    targetUrl.includes('.m3u') || 
                    contentType.includes('mpegurl') || 
@@ -130,14 +137,12 @@ export async function onRequest(context) {
     if (isM3U8) {
       const text = await response.text();
 
-      // যদি ফাইলের ভেতরে #EXTM3U লেখা থাকে বা M3U8 ফরম্যাট হয়
       if (text.includes('#EXTM3U') || text.includes('#EXT-X-STREAM-INF') || text.includes('#EXTINF')) {
         const lines = text.split('\n');
         const rewrittenLines = lines.map(line => {
           const trimmed = line.trim();
           if (!trimmed) return line;
 
-          // #EXT-X-KEY (AES Encryption) এবং #EXT-X-MEDIA রিরাইট
           if (trimmed.startsWith('#')) {
             if (trimmed.includes('URI=')) {
               return trimmed.replace(/URI=["']([^"']+)["']/g, (match, uri) => {
@@ -152,7 +157,6 @@ export async function onRequest(context) {
             return line;
           }
 
-          // .ts সেগমেন্ট এবং চ্যাঙ্ক রিরাইট
           try {
             const abs = new URL(trimmed, finalUrl).href;
             return `${protocol}://${host}/?url=${encodeURIComponent(abs)}`;
@@ -179,19 +183,14 @@ export async function onRequest(context) {
       });
     }
 
-    // Binary Video TS Segments ট্রান্সফার
+    // Binary TS Segments
     const responseHeaders = new Headers();
     Object.entries(corsHeaders).forEach(([key, value]) => {
       responseHeaders.set(key, value);
     });
 
     const targetType = response.headers.get('content-type');
-    if (targetType) {
-      responseHeaders.set('Content-Type', targetType);
-    } else {
-      responseHeaders.set('Content-Type', 'video/mp2t');
-    }
-    
+    responseHeaders.set('Content-Type', targetType || 'video/mp2t');
     responseHeaders.set('Cache-Control', 'public, max-age=3600');
 
     return new Response(response.body, {
