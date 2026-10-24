@@ -20,6 +20,14 @@ Deno.serve(async (req) => {
   const requestUrl = req.url;
   const targetUrl = url.searchParams.get('url');
 
+  // Infinite loop protection: prevent proxying itself
+  if (targetUrl && (targetUrl.includes(host) || targetUrl.includes('deno.dev'))) {
+    return new Response(JSON.stringify({ error: 'Infinite loop detected' }), {
+      status: 400,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  }
+
   // M3U Playlist Request
   if (!targetUrl && (requestUrl.includes('.m3u') || requestUrl.includes('playlist-expire'))) {
     if (EXPIRE_CODE && !requestUrl.includes(EXPIRE_CODE)) {
@@ -149,10 +157,12 @@ Deno.serve(async (req) => {
         });
 
         return new Response(rewrittenLines.join('\n'), {
-          status: 200,
-          headers: {
-            ...corsHeaders,
-            'Content-Type': 'application/vnd.apple.mpegurl; charset=utf-8'
+          status: {
+            status: 200,
+            headers: {
+              ...corsHeaders,
+              'Content-Type': 'application/vnd.apple.mpegurl; charset=utf-8'
+            }
           }
         });
       }
