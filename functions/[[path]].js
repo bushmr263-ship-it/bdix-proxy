@@ -28,11 +28,9 @@ export async function onRequest(context) {
   const targetUrl = url.searchParams.get('url');
 
   // ---------------------------------------------------------
-  // 1. M3U Playlist Request (/playlist-expire=48436844.m3u)
+  // ১. M3U প্লেলিস্ট রিকোয়েস্ট (/playlist-expire=48436844.m3u)
   // ---------------------------------------------------------
   if (!targetUrl && (requestUrl.includes('.m3u') || requestUrl.includes('playlist-expire'))) {
-    
-    // Security verification
     if (EXPIRE_CODE && !requestUrl.includes(EXPIRE_CODE)) {
       return new Response(JSON.stringify({ error: 'Access Denied: Invalid or Expired ID' }), {
         status: 403,
@@ -88,7 +86,7 @@ export async function onRequest(context) {
   }
 
   // ---------------------------------------------------------
-  // 2. Stream Fetching
+  // ২. ভিডিও ও চ্যাঙ্ক প্রক্সি ফেচিং (Stream / TS / M3U8)
   // ---------------------------------------------------------
   if (!targetUrl) {
     return new Response(JSON.stringify({ error: 'No URL provided' }), {
@@ -120,63 +118,53 @@ export async function onRequest(context) {
     const contentType = response.headers.get('content-type') || '';
     const finalUrl = response.url; 
 
-    const isPlaylist = targetUrl.includes('.m3u') || 
-                       contentType.includes('mpegurl') || 
-                       contentType.includes('m3u') || 
-                       contentType.includes('text/plain');
+    // M3U8 / Playlist সঠিকভাবে রিরাইট করার জন্য কন্ডিশন
+    const isM3U8 = targetUrl.toLowerCase().includes('.m3u8') || 
+                   contentType.toLowerCase().includes('mpegurl') || 
+                   contentType.toLowerCase().includes('m3u');
 
-    if (isPlaylist) {
+    if (isM3U8) {
       const text = await response.text();
+      const lines = text.split('\n');
+      
+      const rewrittenLines = lines.map(line => {
+        const trimmed = line.trim();
+        if (!trimmed) return line;
 
-      if (text.trim().startsWith('#EXTM3U') || targetUrl.includes('.m3u8')) {
-        const lines = text.split('\n');
-        const rewrittenLines = lines.map(line => {
-          const trimmed = line.trim();
-          if (!trimmed) return line;
-
-          // AES Key (#EXT-X-KEY) rewrite
-          if (trimmed.startsWith('#')) {
-            if (trimmed.includes('URI=')) {
-              return trimmed.replace(/URI=["']([^"']+)["']/g, (match, uri) => {
-                try {
-                  const abs = new URL(uri, finalUrl).href;
-                  return `URI="${protocol}://${host}/?url=${encodeURIComponent(abs)}"`;
-                } catch (e) {
-                  return match;
-                }
-              });
-            }
-            return line;
+        // AES Encryption Key (#EXT-X-KEY) ও URI রিরাইট
+        if (trimmed.startsWith('#')) {
+          if (trimmed.includes('URI=')) {
+            return trimmed.replace(/URI=["']([^"']+)["']/g, (match, uri) => {
+              try {
+                const abs = new URL(uri, finalUrl).href;
+                return `URI="${protocol}://${host}/?url=${encodeURIComponent(abs)}"`;
+              } catch (e) {
+                return match;
+              }
+            });
           }
+          return line;
+        }
 
-          // TS segment rewrite
-          try {
-            const abs = new URL(trimmed, finalUrl).href;
-            return `${protocol}://${host}/?url=${encodeURIComponent(abs)}`;
-          } catch (e) {
-            return line;
-          }
-        });
+        // TS সেগমেন্ট এবং সাব-প্লেলিস্ট রিরাইট
+        try {
+          const abs = new URL(trimmed, finalUrl).href;
+          return `${protocol}://${host}/?url=${encodeURIComponent(abs)}`;
+        } catch (e) {
+          return line;
+        }
+      });
 
-        return new Response(rewrittenLines.join('\n'), {
-          status: 200,
-          headers: {
-            ...corsHeaders,
-            'Content-Type': 'application/vnd.apple.mpegurl; charset=utf-8'
-          }
-        });
-      }
-
-      return new Response(text, {
+      return new Response(rewrittenLines.join('\n'), {
         status: 200,
         headers: {
           ...corsHeaders,
-          'Content-Type': contentType || 'text/plain'
+          'Content-Type': 'application/vnd.apple.mpegurl; charset=utf-8'
         }
       });
     }
 
-    // Binary TS Segments
+    // TS বা অন্যান্য বিটস্ট্রিম ডাটা প্লেয়ারে পাঠানো
     const responseHeaders = new Headers(response.headers);
     Object.entries(corsHeaders).forEach(([key, value]) => {
       responseHeaders.set(key, value);
